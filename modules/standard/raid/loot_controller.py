@@ -3,11 +3,10 @@ import time
 from collections import OrderedDict
 
 from core.chat_blob import ChatBlob
-from core.command_param_types import Options, Const, Int, Item, Any
+from core.command_param_types import Const, Int, Item, Any
 from core.db import DB
-from core.decorators import instance, command, setting, timerevent
+from core.decorators import instance, command, timerevent
 from core.setting_service import SettingService
-from core.setting_types import BooleanSettingType
 from core.text import Text
 from modules.standard.raid.item_types import LootItem, AuctionItem
 from modules.standard.raid.leader_controller import LeaderController
@@ -22,38 +21,10 @@ class LootController:
     def inject(self, registry):
         self.bot = registry.get_instance("bot")
         self.db: DB = registry.get_instance("db")
-        self.settings_service: SettingService = registry.get_instance("setting_service")
         self.text: Text = registry.get_instance("text")
         self.leader_controller: LeaderController = registry.get_instance("leader_controller")
         self.setting_service: SettingService = registry.get_instance("setting_service")
-        self.command_alias_service = registry.get_instance("command_alias_service")
-
-    def start(self):
-        self.command_alias_service.add_alias("aries", "pande aries")
-        self.command_alias_service.add_alias("aquarius", "pande aquarius")
-        self.command_alias_service.add_alias("leo", "pande leo")
-        self.command_alias_service.add_alias("virgo", "pande virgo")
-        self.command_alias_service.add_alias("cancer", "pande cancer")
-        self.command_alias_service.add_alias("gemini", "pande gemini")
-        self.command_alias_service.add_alias("libra", "pande libra")
-        self.command_alias_service.add_alias("pisces", "pande pisces")
-        self.command_alias_service.add_alias("capricorn", "pande capricorn")
-        self.command_alias_service.add_alias("scorpio", "pande scorpio")
-        self.command_alias_service.add_alias("taurus", "pande taurus")
-        self.command_alias_service.add_alias("sagittarius", "pande sagittarius")
-
-        self.command_alias_service.add_alias("s7", "apf s7")
-        self.command_alias_service.add_alias("s13", "apf s13")
-        self.command_alias_service.add_alias("s28", "apf s28")
-        self.command_alias_service.add_alias("s35", "apf s35")
-
-        self.command_alias_service.add_alias("mitaar", "xan mitaar")
-        self.command_alias_service.add_alias("12m", "xan 12m")
-        self.command_alias_service.add_alias("vortexx", "xan vortexx")
-
-    @setting(name="use_item_icons", value="True", description="Use icons when building loot list")
-    def use_item_icons(self):
-        return BooleanSettingType()
+        self.items_controller = registry.get_instance("items_controller")
 
     @command(command="loot", params=[], description="Show the list of added items", access_level="all")
     def loot_cmd(self, request):
@@ -91,24 +62,11 @@ class LootController:
         try:
             if self.loot_list[item_index]:
                 self.last_modify = int(time.time())
-                return "Removed %s from loot list." % self.loot_list.pop(item_index).item.name
+                return "Removed %s from loot list." % self.loot_list.pop(item_index).get_item_str()
             else:
                 return "Item error."
         except KeyError:
             return "Wrong index given."
-
-    @command(command="loot", params=[Const("additem"), Item("item"), Int("item_count", is_optional=True)],
-             description="Add an item to loot list", access_level="all", sub_command="modify")
-    def loot_add_item_cmd(self, request, _, item, item_count: int):
-        if not self.leader_controller.can_use_command(request.sender.char_id):
-            return LeaderController.NOT_LEADER_MSG
-
-        if item_count is None:
-            item_count = 1
-
-        self.add_item_to_loot(item["low_id"], item["high_id"], item["ql"], item["name"], None, item_count)
-
-        return "%s was added to loot list." % item["name"]
 
     @command(command="loot", params=[Const("increase"), Int("item_index")], description="Increase item count",
              access_level="all", sub_command="modify")
@@ -125,7 +83,7 @@ class LootController:
             if loot_item:
                 loot_item.count += 1
                 self.last_modify = int(time.time())
-                return "Increased item count for %s to %d." % (loot_item.item.name, loot_item.count)
+                return "Increased item count for %s to %d." % (loot_item.get_item_str(), loot_item.count)
             else:
                 return "Item error."
         except KeyError:
@@ -146,7 +104,7 @@ class LootController:
             if loot_item:
                 loot_item.count = loot_item.count - 1 if loot_item.count > 1 else 1
                 self.last_modify = int(time.time())
-                return "Decreased item count for %s to %d." % (loot_item.item.name, loot_item.count)
+                return "Decreased item count for %s to %d." % (loot_item.get_item_str(), loot_item.count)
             else:
                 return "Item error."
         except KeyError:
@@ -159,24 +117,22 @@ class LootController:
             loot_item = self.loot_list[item_index]
             old_item = self.is_already_added(request.sender.name)
 
-            if loot_item:
-                if old_item is not None:
-                    if old_item.item.name == loot_item.item.name:
-                        name = "You have" if request.channel == "msg" else request.sender.name
-                        return "%s already added to %s." % (name, loot_item.item.name)
+            if old_item:
+                if old_item.get_item_str() == loot_item.get_item_str():
+                    name = "You have" if request.channel == "msg" else request.sender.name
+                    return "%s already added to %s." % (name, loot_item.get_item_str())
 
-                    old_item.bidders.remove(request.sender.name)
+                old_item.bidders.remove(request.sender.name)
 
-                name = "You have" if request.channel == "msg" else request.sender.name
-                loot_item.bidders.append(request.sender.name)
+            name = "You have" if request.channel == "msg" else request.sender.name
+            loot_item.bidders.append(request.sender.name)
 
-                self.last_modify = int(time.time())
+            self.last_modify = int(time.time())
 
-                return "%s moved from %s to %s." % (name, old_item.item.name, loot_item.item.name) \
-                    if old_item is not None \
-                    else "%s added to %s." % (name, loot_item.item.name)
+            if old_item is not None:
+                return "%s moved from %s to %s." % (name, old_item.get_item_str(), loot_item.get_item_str())
             else:
-                return "Item error."
+                return "%s added to %s." % (name, loot_item.get_item_str())
 
         except KeyError:
             return "Wrong index given."
@@ -192,7 +148,7 @@ class LootController:
 
                 self.last_modify = int(time.time())
 
-                return "%s removed from %s." % (name, loot_item.item.name)
+                return "%s removed from %s." % (name, loot_item.get_item_str())
             else:
                 return "You are not added to any loot."
         except KeyError:
@@ -221,9 +177,7 @@ class LootController:
                             loot_item.bidders.remove(winner)
                             loot_item.count = loot_item.count - 1 if loot_item.count > 0 else 0
 
-                    item = loot_item.item
-                    blob += "%s. %s (ql%s)\n" % (i, self.text.make_item(item.low_id, item.high_id,
-                                                                        item.ql, item.name), item.ql)
+                    blob += "%d. %s\n" % (i, loot_item.get_item_str())
                     blob += " | Winners: <red>%s<end>\n\n" % '<end>, <red>'.join(winners)
 
             return ChatBlob("Roll results", blob) if len(blob) > 0 else "No one was added to any loot"
@@ -252,22 +206,22 @@ class LootController:
         else:
             return "Loot list is empty."
 
-    @command(command="loot", params=[Const("addraiditem"), Int("item_id"), Int("item_count")],
+    @command(command="loot", params=[Const("addraiditem"), Int("raid_item_id"), Int("item_count")],
              description="Add item from pre-defined raid to loot list", access_level="all", sub_command="modify")
-    def loot_add_raid_item(self, request, _, item_id: int, item_count: int):
+    def loot_add_raid_item(self, request, _, raid_item_id: int, item_count: int):
         if not self.leader_controller.can_use_command(request.sender.char_id):
             return LeaderController.NOT_LEADER_MSG
 
         sql = "SELECT * FROM aodb a LEFT JOIN raid_loot r ON (a.name = r.name AND a.highql >= r.ql) " \
               "WHERE r.id = ? LIMIT 1"
-        item = self.db.query_single(sql, [item_id])
+        item = self.db.query_single(sql, [raid_item_id])
 
         if item:
-            self.add_item_to_loot(item.lowid, item.highid, item.ql, item.name, item.comment, item_count)
+            self.add_item_to_loot(item, item.comment, item_count)
 
             return "Added %s to loot list." % item.name
         else:
-            return "Failed to add item with ID %s." % item_id
+            return "Failed to add item with ID %s." % raid_item_id
 
     @command(command="loot", params=[Const("addraid"), Any("raid"), Any("category")],
              description="Add all loot from pre-defined raid", access_level="all", sub_command="modify")
@@ -276,7 +230,7 @@ class LootController:
             return LeaderController.NOT_LEADER_MSG
 
         items = self.db.query(
-            "SELECT r.raid, r.category, r.id, r.ql, r.name, r.comment, r.multiloot, a.lowid, a.highid, a.icon "
+            "SELECT r.raid, r.category, r.id, r.ql, r.name, r.comment, r.multiloot, a.lowid AS low_id, a.highid AS high_id, a.icon "
             "FROM raid_loot r "
             "LEFT JOIN aodb a "
             "ON (r.name = a.name AND r.ql <= a.highql) "
@@ -287,139 +241,54 @@ class LootController:
 
         if items:
             for item in items:
-                self.add_item_to_loot(item.lowid, item.highid, item.ql, item.name, item.comment, item.multiloot)
+                self.add_item_to_loot(item, item.comment, item.multiloot)
 
             return "%s table was added to loot." % category
         else:
             return "%s does not have any items registered in loot table." % category
 
-    @command(command="apf",
-             params=[Options(["s7", "s13", "s28", "s35"], is_optional=True)],
-             description="Get list of items from APF", access_level="all")
-    def apf_cmd(self, _, category):
-        if category is None:
-            blob = ""
-            sql = "SELECT category FROM raid_loot WHERE raid = 'APF' GROUP BY category"
-            raids = self.db.query(sql)
+    @command(command="loot", params=[Const("additem", is_optional=True), Int("item"), Int("item_count", is_optional=True)],
+             description="Add an item to loot list by item id", access_level="all", sub_command="modify")
+    def loot_add_item_id_cmd(self, request, _, item_id, item_count: int):
+        if not self.leader_controller.can_use_command(request.sender.char_id):
+            return LeaderController.NOT_LEADER_MSG
 
-            for raid in raids:
-                add_loot = self.text.make_chatcmd("Add loot", "/tell <myname> loot addraid APF %s" % raid.category)
-                show_loot = self.text.make_chatcmd(
-                    "Loot table", "/tell <myname> apf %s" % self.get_real_category_name(raid.category, True))
+        if item_count is None:
+            item_count = 1
 
-                sql = "SELECT COUNT(*) AS count FROM raid_loot WHERE category = ?"
-                count = self.db.query_single(sql, [raid.category]).count
+        item = self.items_controller.get_by_item_id(item_id)
+        if not item:
+            return "Could not find item with ID <highlight>%d<end>." % item_id
 
-                blob += "%s - %s items\n" % (raid.category, count)
-                blob += " | [%s] [%s]\n\n" % (show_loot, add_loot)
+        self.add_item_to_loot(item, None, item_count)
 
-            return ChatBlob("APF loot tables", blob)
+        return "%s was added to loot list." % item.name
 
-        add_all = True if category != "s7" else False
-        category = self.get_real_category_name(category)
+    @command(command="loot", params=[Const("additem", is_optional=True), Item("item"), Int("item_count", is_optional=True)],
+             description="Add an item to loot list by item_ref", access_level="all", sub_command="modify")
+    def loot_add_item_ref_cmd(self, request, _, item, item_count: int):
+        if not self.leader_controller.can_use_command(request.sender.char_id):
+            return LeaderController.NOT_LEADER_MSG
 
-        items = self.get_items("APF", category)
+        if item_count is None:
+            item_count = 1
 
-        if items:
-            return ChatBlob("%s loot table" % category, self.build_list(items, "APF", category, add_all))
-        else:
-            return "No loot registered for <highlight>%s<end>." % category
+        self.add_item_to_loot(item, None, item_count)
 
-    @command(command="pande",
-             params=[
-                 Options(["bweapons", "barmor", "bstars", "aries", "aquarius", "leo",
-                          "virgo", "cancer", "gemini", "libra", "pisces", "capricorn",
-                          "scorpio", "taurus", "sagittarius"], is_optional=True)
-             ],
-             description="Get list of items from Pandemonium", access_level="all")
-    def pande_cmd(self, _, category_name):
-        if category_name is None:
-            blob = ""
-            sql = "SELECT category FROM raid_loot WHERE raid = 'Pande' GROUP BY category"
-            raids = self.db.query(sql)
+        return "%s was added to loot list." % item.name
 
-            for raid in raids:
-                show_loot = self.text.make_chatcmd(
-                    "Loot table", "/tell <myname> pande %s" % self.get_real_category_name(raid.category, True))
+    @command(command="loot", params=[Const("additem", is_optional=True), Any("item"), Int("item_count", is_optional=True)],
+             description="Add an item to loot list", access_level="all", sub_command="modify")
+    def loot_add_item_cmd(self, request, _, item, item_count: int):
+        if not self.leader_controller.can_use_command(request.sender.char_id):
+            return LeaderController.NOT_LEADER_MSG
 
-                sql = "SELECT COUNT(*) AS count FROM raid_loot WHERE category = ?"
-                count = self.db.query_single(sql, [raid.category]).count
+        if item_count is None:
+            item_count = 1
 
-                blob += "%s - %s items\n" % (raid.category, count)
-                blob += " | [%s]\n\n" % show_loot
+        self.add_item_to_loot(item, None, item_count)
 
-            return ChatBlob("Pandemonium loot tables", blob)
-
-        category = self.get_real_category_name(category_name)
-
-        items = self.get_items("Pande", category)
-
-        if items:
-            return ChatBlob("%s loot table" % category, self.build_list(items, "Pande", category))
-        else:
-            return "No loot registered for <highlight>%s<end>." % category_name
-
-    @command(command="db", params=[Options(["db1", "db2", "db3", "dbarmor", "util"], is_optional=True)],
-             description="Get list of items from DustBrigade", access_level="all")
-    def db_cmd(self, _, category):
-        if category is None:
-            blob = ""
-            sql = "SELECT category FROM raid_loot WHERE raid = 'DustBrigade' GROUP BY category"
-            raids = self.db.query(sql)
-
-            for raid in raids:
-                show_loot = self.text.make_chatcmd("Loot table", "/tell <myname> db %s" % self.get_real_category_name(raid.category, True))
-
-                sql = "SELECT COUNT(*) AS count FROM raid_loot WHERE category = ?"
-                count = self.db.query_single(sql, [raid.category]).count
-
-                blob += "%s - %s items\n" % (raid.category, count)
-                blob += " | [%s]\n\n" % show_loot
-
-            return ChatBlob("DustBrigade loot tables", blob)
-
-        category = self.get_real_category_name(category)
-
-        items = self.get_items("DustBrigade", category)
-
-        if items:
-            return ChatBlob("%s loot table" % category, self.build_list(items, "DustBrigade", category))
-        else:
-            return "No loot registered for <highlight>%s<end>." % category
-
-    @command(command="xan", params=[Options(["mitaar", "12m", "vortexx"], is_optional=True)],
-             description="Get list of items from Xan", access_level="all")
-    def xan_cmd(self, _, category):
-        if category is None:
-            blob = ""
-            raids = ["Mitaar", "Vortexx", "12Man"]
-
-            for raid in raids:
-                show_loot = self.text.make_chatcmd(
-                    "Loot table", "/tell <myname> xan %s" % self.get_real_category_name(category, True))
-
-                sql = "SELECT COUNT(*) AS count FROM raid_loot WHERE raid = ?"
-                count = self.db.query_single(sql, [raid]).count
-
-                blob += "%s - %s items\n" % (raid, count)
-                blob += " | [%s]\n\n" % show_loot
-
-            return ChatBlob("Xan loot tables", blob)
-
-        category = self.get_real_category_name(category)
-
-        blob = ""
-
-        blob += self.build_list(self.get_items(category, "General"), category, "General")
-
-        blob += self.build_list(self.get_items(category, "Symbiants"), category, "Symbiants")
-
-        blob += self.build_list(self.get_items(category, "Spirits"), category, "Spirits")
-
-        if category == "12Man":
-            blob += self.build_list(self.get_items(category, "Profession Gems"), category, "Profession Gems")
-
-        return ChatBlob("%s loot table" % category, blob)
+        return "<highlight>%s<end> was added to loot list." % item
 
     @timerevent(budatime="1h", description="Periodically check when loot list was last modified, and clear it if last modification was done 1+ hours ago")
     def loot_clear_event(self, _1, _2):
@@ -436,32 +305,28 @@ class LootController:
                 return loot_item
         return None
 
-    def add_item_to_loot(self, low_id: int, high_id: int, ql: int, name: str, comment=None, item_count=1):
-        end_index = list(self.loot_list.keys())[-1] + 1 if len(self.loot_list) > 0 else 1
+    def add_item_to_loot(self, item, comment=None, item_count=1):
+        existing_item = next((loot_item for x, loot_item in self.loot_list.items() if loot_item.item == item), None)
+        if existing_item:
+            existing_item.count += 1
+        else:
+            # this prevents loot items from being re-numbered when items are removed
+            end_index = list(self.loot_list.keys())[-1] + 1 if len(self.loot_list) > 0 else 1
 
-        item_name = "%s (%s)" % (name, comment) if comment is not None and comment != "" else name
+            self.loot_list[end_index] = LootItem(item, comment, None, None, item_count)
 
-        item_ref = {
-            "low_id": low_id,
-            "high_id": high_id,
-            "ql": ql,
-            "name": item_name
-        }
-
-        self.loot_list[end_index] = LootItem(item_ref, None, None, item_count)
         self.last_modify = int(time.time())
 
     def get_loot_list(self):
         blob = ""
 
         for i, loot_item in self.loot_list.items():
-            item = loot_item.item
             bidders = loot_item.bidders
 
             increase_link = self.text.make_chatcmd("+", "/tell <myname> loot increase %d" % i)
             decrease_link = self.text.make_chatcmd("-", "/tell <myname> loot decrease %d" % i)
 
-            blob += "%d. %s " % (i, self.text.make_item(item.low_id, item.high_id, item.ql, item.name))
+            blob += "%d. %s " % (i, loot_item.get_item_str())
             blob += "x%s [%s|%s]\n" % (loot_item.count, increase_link, decrease_link)
 
             if len(bidders) > 0:
@@ -481,13 +346,11 @@ class LootController:
         item = None
 
         for i, loot_item in self.loot_list.items():
-            item = loot_item.item
             bidders = loot_item.bidders
 
-            item_ref = self.text.make_item(item.low_id, item.high_id, item.ql, item.name)
             prefix = "" if loot_item.prefix is None else "%s " % loot_item.prefix
             suffix = "" if loot_item.suffix is None else " %s" % loot_item.suffix
-            blob += "%d. %s%s%s\n" % (i, prefix, item_ref, suffix)
+            blob += "%d. %s%s%s\n" % (i, prefix, loot_item.get_item_str(), suffix)
 
             if len(bidders) > 0:
                 blob += " | <red>%s<end> bidder%s\n" % (len(bidders), "s" if len(bidders) > 1 else "")
@@ -517,68 +380,3 @@ class LootController:
                         "notified when/if the bid has been accepted."
 
         return ChatBlob("Auction list (%d)" % len(self.loot_list), blob)
-
-    # Raids available in AO:
-    # s7, s10, s13, s28, s35, s42, aquarius, virgo, sagittarius, beastweapons, beastarmor,
-    # beaststars, tnh, aries, leo, cancer, gemini, libra, pisces, taurus,
-    # capricorn, scorpio, tara, vortexx, mitaar, 12m, db1, db2, db3, poh,
-    # biodome, manex (collector), hollow islands, mercenaries
-
-    def build_list(self, items, raid=None, category=None, add_all=False):
-        blob = ""
-
-        if add_all:
-            blob += "%s items to loot list\n\n" % self.text.make_chatcmd(
-                "Add all", "/tell <myname> loot addraid %s %s" % (raid, category))
-
-        blob += "<header2>%s<end>\n" % category if category is not None else ""
-
-        for item in items:
-            if item.multiloot > 1:
-                single_link = self.text.make_chatcmd("Add x1", "/tell <myname> loot addraiditem %s 1" % item.id)
-                multi_link = self.text.make_chatcmd(
-                    "Add x%d" % item.multiloot, "/tell <myname> loot addraiditem %s %d" % (item.id, item.multiloot))
-                add_links = "[%s] [%s]" % (single_link, multi_link)
-            else:
-                add_links = "[%s]" % self.text.make_chatcmd("Add x1", "/tell <myname> loot addraiditem %s 1" % item.id)
-
-            comment = " (%s)" % item.comment if item.comment != "" else ""
-
-            if self.settings_service.get("use_item_icons").get_value():
-                item_link = self.text.make_item(item.lowid, item.highid, item.ql, "<img src=rdb://%s>" % item.icon)
-                blob += "%s\n%s%s\n | %s\n\n" % (item_link, item.name, comment, add_links)
-            else:
-                item_link = self.text.make_item(item.lowid, item.highid, item.ql, item.name)
-                blob += "%s%s\n | %s\n\n" % (item_link, comment, add_links)
-
-        return blob
-
-    def get_items(self, raid, category):
-        return self.db.query(
-            "SELECT r.raid, r.category, r.id, r.ql, r.name, r.comment, r.multiloot, a.lowid, a.highid, a.icon "
-            "FROM raid_loot r "
-            "LEFT JOIN aodb a "
-            "ON (r.name = a.name AND r.ql <= a.highql) "
-            "WHERE r.raid = ? AND r.category = ? "
-            "ORDER BY r.name",
-            [raid, category]
-        )
-
-    def get_real_category_name(self, category, reverse=False):
-        real_names = {
-            "s7": "Sector 7", "s13": "Sector 13", "s28": "Sector 28", "s35": "Sector 35",
-            "s42": "Sector 42", "db": "DustBrigade", "aquarius": "Aquarius", "sagittarius": "Sagittarius",
-            "taurus": "Taurus", "libra": "Libra", "capricorn": "Capricorn",
-            "gemini": "Gemini", "virgo": "Virgo", "cancer": "Cancer", "pisces": "Pisces",
-            "scorpio": "Scorpio", "aries": "Aries", "leo": "Leo", "tnh": "The Night Heart",
-            "barmor": "Beast Armor", "bweapons": "Beast Weapons", "bstars": "Stars",
-            "alba": "Albtraum", "symbs": "Symbiants", "spirits": "Spirits",
-            "pgems": "Profession Gems", "gen": "General", "db1": "DB1", "db2": "DB2",
-            "db3": "DB3", "ncu": "HUD/NCU", "gaunt": "Bastion", "mitaar": "Mitaar",
-            "12m": "12Man", "vortexx": "Vortexx", "dbarmor": "DB Armor", "util": "Util"
-        }
-
-        if reverse:
-            return next((name for name, real_name in real_names.items() if real_name == category), None)
-        else:
-            return real_names[category] if category in list(real_names.keys()) else None
