@@ -3,6 +3,7 @@ import time
 from core.chat_blob import ChatBlob
 from core.command_param_types import Const, Any, Int
 from core.decorators import instance, command, event
+from modules.core.org_members.org_member_controller import OrgMemberController
 
 
 @instance()
@@ -15,8 +16,13 @@ class PollController:
         self.job_scheduler = registry.get_instance("job_scheduler")
         self.pork_service = registry.get_instance("pork_service")
         self.command_alias_service = registry.get_instance("command_alias_service")
+        self.alts_service = registry.get_instance("alts_service")
 
     def start(self):
+        self.db.exec("CREATE TABLE IF NOT EXISTS poll (id INT PRIMARY KEY AUTO_INCREMENT, question VARCHAR(1024) NOT NULL, duration INT NOT NULL, min_access_level VARCHAR(20) NOT NULL, char_id INT NOT NULL, created_at INT NOT NULL, finished_at INT NOT NULL, is_finished SMALLINT NOT NULL)")
+        self.db.exec("CREATE TABLE IF NOT EXISTS poll_choice (id INT PRIMARY KEY AUTO_INCREMENT, poll_id INT NOT NULL, choice VARCHAR(1024))")
+        self.db.exec("CREATE TABLE IF NOT EXISTS poll_vote (poll_id INT NOT NULL, choice_id INT NOT NULL, char_id INT NOT NULL)")
+
         self.command_alias_service.add_alias("vote", "poll")
 
     @command(command="poll", params=[], access_level="all",
@@ -44,7 +50,7 @@ class PollController:
         return ChatBlob("Polls (%d)" % len(polls), blob)
 
     @command(command="poll", params=[Int("poll_id")], access_level="all",
-             description="View a poll", extended_description="View information for a poll")
+             description="View a poll")
     def poll_view_cmd(self, request, poll_id):
         poll = self.get_poll(poll_id)
 
@@ -61,8 +67,8 @@ class PollController:
         if len(options) < 4:
             return "You must enter a duration, a poll question, and at least two choices."
 
-        time_str = options.pop(0)
-        question = options.pop(0)
+        time_str = options.pop(0).strip()
+        question = options.pop(0).strip()
         choices = options
 
         duration = self.util.parse_time(time_str)
@@ -71,7 +77,7 @@ class PollController:
 
         poll_id = self.add_poll(question, request.sender.char_id, duration)
         for choice in choices:
-            self.add_poll_choice(poll_id, choice)
+            self.add_poll_choice(poll_id, choice.strip())
 
         self.create_scheduled_job(self.get_poll(poll_id))
 
@@ -88,11 +94,13 @@ class PollController:
         if not choice:
             return "Could not find choice with id <highlight>%d<end> for poll id <highlight>%d<end>." % (choice_id, poll_id)
 
-        # retrieve pork info
-        self.pork_service.get_character_info(request.sender.char_id)
+        main = self.alts_service.get_main(request.sender.char_id)
 
-        cnt = self.db.exec("DELETE FROM poll_vote WHERE poll_id = ? AND char_id = ?", [poll_id, request.sender.char_id])
-        self.db.exec("INSERT INTO poll_vote (poll_id, choice_id, char_id) VALUES (?, ?, ?)", [poll_id, choice_id, request.sender.char_id])
+        # retrieve pork info
+        self.pork_service.get_character_info(main.char_id)
+
+        cnt = self.db.exec("DELETE FROM poll_vote WHERE poll_id = ? AND (char_id = ? OR char_id = ?)", [poll_id, main.char_id, request.sender.char_id])
+        self.db.exec("INSERT INTO poll_vote (poll_id, choice_id, char_id) VALUES (?, ?, ?)", [poll_id, choice_id, main.char_id])
 
         if cnt > 0:
             return "Your vote has been updated."
@@ -106,16 +114,28 @@ class PollController:
         if not poll:
             return "Could not find poll with id <highlight>%d<end>." % poll_id
 
-        cnt = self.db.exec("DELETE FROM poll_vote WHERE poll_id = ? AND char_id = ?", [poll_id, request.sender.char_id])
+        main = self.alts_service.get_main(request.sender.char_id)
+
+        cnt = self.db.exec("DELETE FROM poll_vote WHERE poll_id = ? AND (char_id = ? OR char_id = ?)", [poll_id, main.char_id, request.sender.char_id])
         if cnt > 0:
             return "Your vote has been removed."
         else:
             return "You have not voted for that choice."
 
-    @event(event_type="connect", description="Check for finished polls")
+    @event(event_type="connect", description="Check for finished polls", is_hidden=True)
     def connect_event(self, event_type, event_data):
         self.check_for_finished_polls()
         self.create_scheduled_jobs_for_polls()
+
+    @event(event_type=OrgMemberController.ORG_MEMBER_LOGON_EVENT, description="Send active polls to org members logging on")
+    def org_member_logon_event(self, event_type, event_data):
+        if self.bot.is_ready():
+            data = self.db.query("SELECT * FROM poll WHERE is_finished != 1 AND "
+                                 "id NOT IN (SELECT poll_id FROM poll_vote WHERE char_id = ?) "
+                                 "ORDER BY finished_at ASC, id ASC", [event_data.char_id])
+            if data:
+                row = data[0]
+                self.bot.send_private_message(event_data.char_id, self.show_poll_details_blob(row))
 
     def create_scheduled_jobs_for_polls(self):
         data = self.db.query("SELECT * FROM poll WHERE is_finished != 1")

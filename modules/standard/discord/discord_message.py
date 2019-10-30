@@ -2,39 +2,37 @@ from discord import Embed
 
 
 class DiscordMessage:
-    def __init__(self, dtype, channel, sender, content, command=False, color=None):
+    def __init__(self, dtype, channel, sender, content, color=None):
         self.dtype = str(dtype)
         self.channel = str(channel)
-        self.sender = str(sender)
+        self.sender = sender
         self.content = str(content).replace("\"", "'")
         self.color = color
 
         if self.color is None:
             self.color = 0
 
-        if command:
-            self.build_command_message()
-        else:
-            self.build_message()
-
     def build_command_message(self):
-        if self.dtype == "embed":
-            content = "\n" + self.content
+        content = "\n" + self.content
 
-            self.message = Embed(title=self.channel, description=content, color=self.color)
-        else:
-            self.message = self.content
+        return Embed(title=self.channel, description=content, color=self.color)
 
     def build_message(self):
-        if self.dtype == "embed":
-            content = self.sender+": "+self.content
-
-            self.message = Embed(title=self.channel, description=content, color=self.color)
+        if self.sender:
+            content = self.sender + ": " + self.content
         else:
-            self.message = "["+self.channel+"] "+self.sender+": "+self.content
+            content = self.content
+
+        if self.channel:
+            return "[%s] %s" % (self.channel, content)
+        else:
+            return content
 
     def get_message(self):
-        return self.message
+        if self.dtype == "embed":
+            return self.build_command_message()
+        else:
+            return self.build_message()
 
     def get_type(self):
         return self.dtype

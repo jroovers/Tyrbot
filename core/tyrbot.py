@@ -37,7 +37,7 @@ class Tyrbot(Bot):
         self.packet_queue = DelayQueue(2, 2.5)
         self.last_timer_event = 0
         self.start_time = int(time.time())
-        self.version = "0.3-beta"
+        self.version = "0.4-beta"
 
     def inject(self, registry):
         self.db = registry.get_instance("db")
@@ -74,6 +74,8 @@ class Tyrbot(Bot):
         self.db.exec("DELETE FROM event_config WHERE verified = 0")
         self.db.exec("DELETE FROM timer_event WHERE handler NOT IN (SELECT handler FROM event_config WHERE event_type = ?)", ["timer"])
         self.db.exec("DELETE FROM setting WHERE verified = 0")
+
+        self.db.exec("UPDATE event_config SET enabled = 1 WHERE is_hidden = 1")
 
         self.status = BotStatus.RUN
 
@@ -256,7 +258,7 @@ class Tyrbot(Bot):
                 self.event_service.fire_event(self.OUTGOING_PRIVATE_MESSAGE_EVENT, DictObject({"char_id": char_id,
                                                                                                "message": msg}))
 
-    def send_private_channel_message(self, msg, private_channel=None, add_color=False, fire_outgoing_event=True):
+    def send_private_channel_message(self, msg, private_channel=None, add_color=True, fire_outgoing_event=True):
         if private_channel is None:
             private_channel = self.char_id
 

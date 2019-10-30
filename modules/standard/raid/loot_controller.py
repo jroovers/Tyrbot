@@ -1,14 +1,16 @@
+import re
 import secrets
 import time
 from collections import OrderedDict
 
 from core.chat_blob import ChatBlob
-from core.command_param_types import Const, Int, Item, Any
+from core.command_param_types import Const, Int, Any
 from core.db import DB
 from core.decorators import instance, command, timerevent
 from core.setting_service import SettingService
 from core.text import Text
-from modules.standard.raid.item_types import LootItem, AuctionItem
+from modules.standard.items.items_controller import ItemsController
+from modules.standard.raid.item_types import LootItem
 from modules.standard.raid.leader_controller import LeaderController
 
 
@@ -24,19 +26,14 @@ class LootController:
         self.text: Text = registry.get_instance("text")
         self.leader_controller: LeaderController = registry.get_instance("leader_controller")
         self.setting_service: SettingService = registry.get_instance("setting_service")
-        self.items_controller = registry.get_instance("items_controller")
+        self.items_controller: ItemsController = registry.get_instance("items_controller")
 
     @command(command="loot", params=[], description="Show the list of added items", access_level="all")
     def loot_cmd(self, request):
         if not self.loot_list:
             return "Loot list is empty."
 
-        if isinstance(list(self.loot_list.values())[0], AuctionItem):
-            return self.get_auction_list()
-        if isinstance(list(self.loot_list.values())[0], LootItem):
-            return self.get_loot_list()
-
-        return "Error when generating list (loot type is unsupported)."
+        return self.get_loot_list()
 
     @command(command="loot", params=[Const("clear")], description="Clear all loot", access_level="all", sub_command="modify")
     def loot_clear_cmd(self, request, _):
@@ -212,7 +209,7 @@ class LootController:
         if not self.leader_controller.can_use_command(request.sender.char_id):
             return LeaderController.NOT_LEADER_MSG
 
-        sql = "SELECT * FROM aodb a LEFT JOIN raid_loot r ON (a.name = r.name AND a.highql >= r.ql) " \
+        sql = "SELECT r.name, r.comment,  r.ql, a.lowid AS low_id, a.highid AS high_id FROM aodb a LEFT JOIN raid_loot r ON (a.name = r.name AND a.highql >= r.ql) " \
               "WHERE r.id = ? LIMIT 1"
         item = self.db.query_single(sql, [raid_item_id])
 
@@ -264,31 +261,28 @@ class LootController:
 
         return "%s was added to loot list." % item.name
 
-    @command(command="loot", params=[Const("additem", is_optional=True), Item("item"), Int("item_count", is_optional=True)],
-             description="Add an item to loot list by item_ref", access_level="all", sub_command="modify")
-    def loot_add_item_ref_cmd(self, request, _, item, item_count: int):
-        if not self.leader_controller.can_use_command(request.sender.char_id):
-            return LeaderController.NOT_LEADER_MSG
-
-        if item_count is None:
-            item_count = 1
-
-        self.add_item_to_loot(item, None, item_count)
-
-        return "%s was added to loot list." % item.name
-
     @command(command="loot", params=[Const("additem", is_optional=True), Any("item"), Int("item_count", is_optional=True)],
              description="Add an item to loot list", access_level="all", sub_command="modify")
     def loot_add_item_cmd(self, request, _, item, item_count: int):
         if not self.leader_controller.can_use_command(request.sender.char_id):
             return LeaderController.NOT_LEADER_MSG
-
+        loot = ""
         if item_count is None:
             item_count = 1
+        items = re.findall(r"(([^<]+)?<a href=[\"\']itemref://(\d+)/(\d+)/(\d+)[\"\']>([^<]+)</a>([^<]+)?)", item)
+        if items and item_count is 1:
+            for item in items:
+                item = self.text.make_item(int(item[2]), int(item[3]), int(item[4]), item[5])
+                if loot is not "":
+                    loot += ", " + item
+                else:
+                    loot += item
+                self.add_item_to_loot(item)
+        else:
+            loot += item
+            self.add_item_to_loot(item, None, item_count)
 
-        self.add_item_to_loot(item, None, item_count)
-
-        return "<highlight>%s<end> was added to loot list." % item
+        return "<highlight>%s<end> was added to loot list." % loot
 
     @timerevent(budatime="1h", description="Periodically check when loot list was last modified, and clear it if last modification was done 1+ hours ago")
     def loot_clear_event(self, _1, _2):
@@ -340,43 +334,3 @@ class LootController:
             blob += " | [%s] [%s] [%s]\n\n" % (add_to_loot, remove_from_loot, remove_item)
 
         return ChatBlob("Loot (%d)" % len(self.loot_list), blob)
-
-    def get_auction_list(self):
-        blob = ""
-        item = None
-
-        for i, loot_item in self.loot_list.items():
-            bidders = loot_item.bidders
-
-            prefix = "" if loot_item.prefix is None else "%s " % loot_item.prefix
-            suffix = "" if loot_item.suffix is None else " %s" % loot_item.suffix
-            blob += "%d. %s%s%s\n" % (i, prefix, loot_item.get_item_str(), suffix)
-
-            if len(bidders) > 0:
-                blob += " | <red>%s<end> bidder%s\n" % (len(bidders), "s" if len(bidders) > 1 else "")
-            else:
-                blob += " | <green>No bidders<end>\n"
-
-            if len(self.loot_list) > 1:
-                bid_link = self.text.make_chatcmd("Bid", "/tell <myname> bid item %d" % i)
-                blob += " | [%s]\n\n" % bid_link
-
-        if len(self.loot_list) == 1:
-            min_bid = self.setting_service.get("minimum_bid").get_value()
-            blob += "\n"
-            blob += "<header2>Bid info<end>\n" \
-                    "To bid for <yellow>%s<end>, you must send a tell to <myname> with\n\n" \
-                    "<tab><highlight>/tell <myname> auction bid &lt;amount&gt;<end>\n\n" \
-                    "Where you replace &lt;amount&gt; with the amount of points you are welling to bid " \
-                    "for the item.\n\nMinimum bid is %d, and you can also use \"all\" as bid, to bid " \
-                    "all your available points.\n\n" % (item.name, min_bid)
-            if self.setting_service.get("vickrey_auction").get_value():
-                blob += "<header2>This is a Vickrey auction<end>\n" \
-                        " - In a Vickrey auction, you only get to bid twice on the same item.\n" \
-                        " - You won't be notified of the outcome of your bid, as all bids will be anonymous.\n" \
-                        " - The highest anonymous bid will win, and pay the second-highest bid.\n" \
-                        " - Bids are anonymous, meaning you do not share your bid with others, or write this command " \
-                        "in the raid channel.\n - Bidding is done with the command described above. You'll be " \
-                        "notified when/if the bid has been accepted."
-
-        return ChatBlob("Auction list (%d)" % len(self.loot_list), blob)

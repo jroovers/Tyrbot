@@ -1,12 +1,16 @@
+import hjson
+
 from core.aochat.server_packets import BuddyAdded
 from core.chat_blob import ChatBlob
 from core.command_param_types import Const, Character
 from core.decorators import instance, event, timerevent, command, setting
+from core.dict_object import DictObject
 from core.logger import Logger
 import time
 
 from core.public_channel_service import PublicChannelService
 from core.setting_types import NumberSettingType, TextSettingType
+from core.translation_service import TranslationService
 from modules.standard.org.org_activity_controller import OrgActivityController
 
 
@@ -22,6 +26,7 @@ class OrgMemberController:
 
     ORG_MEMBER_LOGON_EVENT = "org_member_logon"
     ORG_MEMBER_LOGOFF_EVENT = "org_member_logoff"
+    ORG_MEMBER_REMOVED_EVENT = "org_member_removed"
 
     MAX_CACHE_AGE = 86400
 
@@ -38,12 +43,21 @@ class OrgMemberController:
         self.org_pork_service = registry.get_instance("org_pork_service")
         self.event_service = registry.get_instance("event_service")
         self.character_service = registry.get_instance("character_service")
+        self.ts: TranslationService = registry.get_instance("translation_service")
+        self.getresp = self.ts.get_response
 
     def pre_start(self):
         self.event_service.register_event_type(self.ORG_MEMBER_LOGON_EVENT)
         self.event_service.register_event_type(self.ORG_MEMBER_LOGOFF_EVENT)
+        self.event_service.register_event_type(self.ORG_MEMBER_REMOVED_EVENT)
+
         self.access_service.register_access_level(self.ORG_ACCESS_LEVEL, 60, self.check_org_member)
         self.bot.add_packet_handler(BuddyAdded.id, self.handle_buddy_added)
+        self.ts.register_translation("module/org_members", self.load_org_members_msg)
+
+    def load_org_members_msg(self):
+        with open("modules/core/org_members/org_members.msg", mode="r", encoding="utf-8") as f:
+            return hjson.load(f)
 
     @setting(name="org_id", value="", description="Override the default org id (the bot will get the org id automatically--this setting is intended for development and testing only. use at your own risk. restart the bot after changing this setting)")
     def org_id(self):
@@ -54,42 +68,42 @@ class OrgMemberController:
         return TextSettingType()
 
     def start(self):
-        self.db.exec("CREATE TABLE IF NOT EXISTS org_member (char_id INT NOT NULL PRIMARY KEY, mode VARCHAR(20) NOT NULL, last_seen INT NOT NULL DEFAULT 0)")
+        self.db.exec("CREATE TABLE IF NOT EXISTS org_member (char_id INT NOT NULL PRIMARY KEY,"
+                     "mode VARCHAR(20) NOT NULL, last_seen INT NOT NULL DEFAULT 0)")
 
     @command(command="notify", params=[Const("off"), Character("character")], access_level="admin",
              description="Turn off online notification for a character")
     def notify_off_cmd(self, request, _, char):
         if not char.char_id:
-            return "Could not find character <highlight>%s<end>." % char.name
+            return self.getresp("global", "char_not_found", {"char": char.name})
 
         org_member = self.get_org_member(char.char_id)
         if not org_member or org_member.mode == self.MODE_REM_MANUAL:
-            return "<highlight>%s<end> is not on the notify list." % char.name
+            return self.getresp("module/org_members", "notify_rem_fail", {"char": char.name})
 
         self.process_update(char.char_id, org_member.mode if org_member else None, self.MODE_REM_MANUAL)
 
         # fire org_member logoff event
         self.event_service.fire_event(self.ORG_MEMBER_LOGOFF_EVENT, org_member)
 
-        return "<highlight>%s<end> has been removed from the notify list." % char.name
+        return self.getresp("module/org_members", "notify_rem_success", {"char": char.name})
 
     @command(command="notify", params=[Const("on"), Character("character")], access_level="admin",
              description="Turn on online notification for a character")
     def notify_on_cmd(self, request, _, char):
         if not char.char_id:
-            return "Could not find character <highlight>%s<end>." % char.name
+            return self.getresp("global", "char_not_found", {"char": char.name})
 
         org_member = self.get_org_member(char.char_id)
         if org_member and (org_member.mode == self.MODE_ADD_AUTO or org_member.mode == self.MODE_ADD_MANUAL):
-            return "<highlight>%s<end> is already on the notify list." % char.name
+            return self.getresp("module/org_members", "notify_add_fail", {"char": char.name})
 
         self.process_update(char.char_id, org_member.mode if org_member else None, self.MODE_ADD_MANUAL)
 
         # fire org_member logon event
         if self.buddy_service.is_online(char.char_id):
             self.event_service.fire_event(self.ORG_MEMBER_LOGON_EVENT, self.get_org_member(char.char_id))
-
-        return "<highlight>%s<end> has been added to the notify list." % char.name
+        return self.getresp("module/org_members", "notify_add_success", {"char": char.name})
 
     @command(command="orgmembers", params=[], access_level="admin",
              description="Show the list of org members")
@@ -99,18 +113,18 @@ class OrgMemberController:
         for row in data:
             blob += self.text.format_char_info(row) + " " + row.mode + "\n"
 
-        return ChatBlob("Org Members (%d)" % len(data), blob)
+        return ChatBlob(self.getresp("module/org_members", "blob_title_list", {"amount": len(data)}), blob)
 
-    @event(event_type="connect", description="Add members as buddies of the bot on startup")
+    @event(event_type="connect", description="Add members as buddies of the bot on startup", is_hidden=True)
     def handle_connect_event(self, event_type, event_data):
         for row in self.get_all_org_members():
             self.update_buddylist(row.char_id, row.mode)
 
-    @event(event_type=ORG_MEMBER_LOGON_EVENT, description="Record last seen info")
+    @event(event_type=ORG_MEMBER_LOGON_EVENT, description="Record last seen info", is_hidden=True)
     def handle_org_member_logon_event(self, event_type, event_data):
         self.update_last_seen(event_data.char_id)
 
-    @event(event_type=ORG_MEMBER_LOGOFF_EVENT, description="Record last seen info")
+    @event(event_type=ORG_MEMBER_LOGOFF_EVENT, description="Record last seen info", is_hidden=True)
     def handle_org_member_logoff_event(self, event_type, event_data):
         if self.bot.is_ready():
             self.update_last_seen(event_data.char_id)
@@ -146,13 +160,15 @@ class OrgMemberController:
             for char_id, mode in db_members.items():
                 self.process_update(char_id, mode, self.MODE_REM_AUTO)
 
-    @event(PublicChannelService.ORG_MSG_EVENT, "Update org roster when characters join or leave")
+    @event(PublicChannelService.ORG_MSG_EVENT, "Update org roster when characters join or leave", is_hidden=True)
     def org_msg_event(self, event_type, event_data):
         ext_msg = event_data.extended_message
         if [ext_msg.category_id, ext_msg.instance_id] == OrgActivityController.LEFT_ORG:
             self.process_org_msg(ext_msg.params[0], self.MODE_REM_MANUAL)
         elif [ext_msg.category_id, ext_msg.instance_id] == OrgActivityController.KICKED_FROM_ORG:
             self.process_org_msg(ext_msg.params[1], self.MODE_REM_MANUAL)
+        elif [ext_msg.category_id, ext_msg.instance_id] == OrgActivityController.KICKED_ALIGNMENT_CHANGED:
+            self.process_org_msg(ext_msg.params[0], self.MODE_REM_MANUAL)
         elif [ext_msg.category_id, ext_msg.instance_id] == OrgActivityController.INVITED_TO_ORG:
             self.process_org_msg(ext_msg.params[1], self.MODE_ADD_MANUAL)
         elif [ext_msg.category_id, ext_msg.instance_id] == OrgActivityController.KICKED_INACTIVE_FROM_ORG:
@@ -214,13 +230,16 @@ class OrgMemberController:
         elif old_mode == self.MODE_ADD_AUTO:
             if new_mode == self.MODE_REM_MANUAL:
                 self.update_org_member(char_id, new_mode)
+                self.event_service.fire_event(self.ORG_MEMBER_LOGOFF_EVENT, DictObject({"char_id": char_id}))
             elif new_mode == self.MODE_REM_AUTO:
                 self.remove_org_member(char_id)
+                self.event_service.fire_event(self.ORG_MEMBER_LOGOFF_EVENT, DictObject({"char_id": char_id}))
         elif old_mode == self.MODE_ADD_MANUAL:
             if new_mode == self.MODE_ADD_AUTO:
                 self.update_org_member(char_id, new_mode)
             elif new_mode == self.MODE_REM_MANUAL:
                 self.remove_org_member(char_id)
+                self.event_service.fire_event(self.ORG_MEMBER_LOGOFF_EVENT, DictObject({"char_id": char_id}))
         elif old_mode == self.MODE_REM_MANUAL:
             if new_mode == self.MODE_ADD_MANUAL:
                 self.update_org_member(char_id, new_mode)

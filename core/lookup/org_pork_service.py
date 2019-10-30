@@ -5,7 +5,6 @@ from requests import ReadTimeout
 from core.decorators import instance
 from core.dict_object import DictObject
 from core.logger import Logger
-from __init__ import none_to_empty_string
 import requests
 import datetime
 import json
@@ -39,7 +38,7 @@ class OrgPorkService:
             result = json.loads(cache_result.data)
             is_cache = True
         else:
-            url = "https://pork.jkbff.com/org/stats/d/%d/name/%d/basicstats.xml?data_type=json" % (self.bot.dimension, org_id)
+            url = self.get_pork_url(self.bot.dimension, org_id)
 
             try:
                 r = requests.get(url, timeout=5)
@@ -134,7 +133,7 @@ class OrgPorkService:
                     "ai_rank": org_member["DEFENDER_RANK_TITLE"],
                     "ai_level": org_member["ALIENLEVEL"],
                     "pvp_rating": org_member["PVPRATING"],
-                    "pvp_title": none_to_empty_string(org_member["PVPTITLE"]),
+                    "pvp_title": org_member["PVPTITLE"] or "",
                     "head_id": org_member["HEADID"],
                     "org_id": org_info.get("ORG_INSTANCE", 0),
                     "org_name": org_info.get("NAME", ""),
@@ -158,3 +157,9 @@ class OrgPorkService:
                                "org_info": new_org_info,
                                "org_members": members,
                                "last_updated": int(datetime.datetime.strptime(last_updated, "%Y/%m/%d %H:%M:%S").timestamp())})
+
+    def get_pork_url(self, dimension, org_id):
+        if dimension == 6:
+            return "http://people.anarchy-online.com/org/stats/d/%d/name/%d/basicstats.xml?data_type=json" % (dimension, org_id)
+        else:
+            return "http://people.anarchy-online.com/org/stats/d/%d/name/%d/basicstats.xml?data_type=json" % (dimension, org_id)

@@ -23,10 +23,10 @@ class TowerController:
     ALL_TOWERS_ID = 42949672960
 
     ATTACK_1 = [506, 12753364]  # The %s organization %s just entered a state of war! %s attacked the %s organization %s's tower in %s at location (%d,%d).
-    ATTACK_2 = re.compile("^(.+) just attacked the (clan|neutral|omni) organization (.+)'s tower in (.+) at location \((\d+), (\d+)\).\n$")
+    ATTACK_2 = re.compile(r"^(.+) just attacked the (clan|neutral|omni) organization (.+)'s tower in (.+) at location \((\d+), (\d+)\).\n$")
 
-    VICTORY_1 = re.compile("^Notum Wars Update: Victory to the (Clan|Neutral|Omni)s!!!$")
-    VICTORY_2 = re.compile("^The (Clan|Neutral|Omni) organization (.+) attacked the (Clan|Neutral|Omni) (.+) at their base in (.+). The attackers won!!$")
+    VICTORY_1 = re.compile(r"^Notum Wars Update: Victory to the (Clan|Neutral|Omni)s!!!$")
+    VICTORY_2 = re.compile(r"^The (Clan|Neutral|Omni) organization (.+) attacked the (Clan|Neutral|Omni) (.+) at their base in (.+). The attackers won!!$")
     VICTORY_3 = [506, 147506468]  # 'Notum Wars Update: The %s organization %s lost their base in %s.'
 
     def __init__(self):
@@ -88,7 +88,7 @@ class TowerController:
 
         return ChatBlob(title, blob)
 
-    @event(event_type="connect", description="Check if All Towers channel is available")
+    @event(event_type="connect", description="Check if All Towers channel is available", is_hidden=True)
     def handle_connect_event(self, event_type, event_data):
         if self.public_channel_service.org_id and not self.public_channel_service.get_channel_id("All Towers"):
             self.logger.warning("bot is a member of an org but does not have access to 'All Towers' channel and therefore will not receive tower attack messages")
@@ -209,6 +209,7 @@ class TowerController:
         if packet.extended_message and [packet.extended_message.category_id, packet.extended_message.instance_id] == self.VICTORY_3:
             params = packet.extended_message.params
             return DictObject({
+                # TODO might be terminated or un-orged player
                 "type": "terminated",
                 "winner": {
                     "faction": params[0].capitalize(),

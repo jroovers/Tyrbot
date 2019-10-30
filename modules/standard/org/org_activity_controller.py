@@ -12,6 +12,7 @@ class OrgActivityController:
     KICKED_FROM_ORG = [508, 37093479]
     INVITED_TO_ORG = [508, 173558247]
     KICKED_INACTIVE_FROM_ORG = [508, 20908201]
+    KICKED_ALIGNMENT_CHANGED = [501, 181448347]
 
     def __init__(self):
         self.logger = Logger(__name__)
@@ -51,7 +52,7 @@ class OrgActivityController:
 
         return ChatBlob("Org Activity", blob)
 
-    @event(PublicChannelService.ORG_MSG_EVENT, "Record org member activity")
+    @event(PublicChannelService.ORG_MSG_EVENT, "Record org member activity", is_hidden=True)
     def org_msg_event(self, event_type, event_data):
         ext_msg = event_data.extended_message
         if [ext_msg.category_id, ext_msg.instance_id] == self.LEFT_ORG:

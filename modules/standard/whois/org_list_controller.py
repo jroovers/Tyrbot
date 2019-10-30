@@ -90,14 +90,14 @@ class OrgListController:
 
         self.check_for_orglist_end()
 
-    @event(event_type=BuddyService.BUDDY_LOGON_EVENT, description="Detect online buddies for orglist command")
+    @event(event_type=BuddyService.BUDDY_LOGON_EVENT, description="Detect online buddies for orglist command", is_hidden=True)
     def buddy_logon_event(self, event_type, event_data):
         if self.orglist and event_data.char_id in self.orglist.waiting_org_members:
             self.update_online_status(event_data.char_id, True)
             self.buddy_service.remove_buddy(event_data.char_id, self.ORGLIST_BUDDY_TYPE)
             self.check_for_orglist_end()
 
-    @event(event_type=BuddyService.BUDDY_LOGOFF_EVENT, description="Detect offline buddies for orglist command")
+    @event(event_type=BuddyService.BUDDY_LOGOFF_EVENT, description="Detect offline buddies for orglist command", is_hidden=True)
     def buddy_logoff_event(self, event_type, event_data):
         if self.orglist and event_data.char_id in self.orglist.waiting_org_members:
             self.update_online_status(event_data.char_id, False)
@@ -155,6 +155,8 @@ class OrgListController:
 
     def iterate_org_members(self):
         # add org_members that we don't have online status for as buddies
+        if len(self.orglist.waiting_org_members) >= 200:
+            return
         for char_id, org_member in self.orglist.org_members.copy().items():
             self.orglist.waiting_org_members[char_id] = self.orglist.org_members[char_id]
             del self.orglist.org_members[char_id]
@@ -167,7 +169,6 @@ class OrgListController:
                     self.update_online_status(char_id, False)
             else:
                 self.update_online_status(char_id, is_online)
-
             if not self.buddy_list_has_available_slots():
                 break
 
